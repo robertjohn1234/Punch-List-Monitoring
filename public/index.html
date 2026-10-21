@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Punch List Monitoring</title>
   <meta name="description" content="Punch list status, owners and due dates.">
   <script src="/vendor/chart.umd.js"></script>
@@ -68,6 +68,8 @@
 
 <script>
   const CHECK_EVERY_MINUTES = 5;
+  const phone = window.matchMedia("(max-width: 640px)");
+  Chart.defaults.font.size = phone.matches ? 11 : 12;
 
   const STATUS_META = {
     "COMPLETED":       { label: "Completed",         color: "#16a34a", text: "#fff" },
@@ -152,7 +154,7 @@
         labels: order.map(s => meta(s).label),
         datasets: [{ data: order.map(s => actions.filter(a => a.status === s).length), backgroundColor: order.map(s => meta(s).color) }]
       },
-      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: "right" } } }
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: phone.matches ? "bottom" : "right" } } }
     });
   }
 
@@ -259,7 +261,7 @@
     return true;
   }
 
-  function cell(row, txt) { const c = row.insertCell(); c.textContent = txt; return c; }
+  function cell(row, txt, label) { const c = row.insertCell(); c.textContent = txt; if (label) c.dataset.label = label; return c; }
 
   function renderList() {
     const list = document.getElementById("list");
@@ -286,19 +288,19 @@
       let lastIssue = null;
       visible.forEach(a => {
         const r = body.insertRow();
-        const ic = cell(r, a.issue === lastIssue ? "" : a.issue); ic.className = "issue";
+        const ic = cell(r, a.issue === lastIssue ? "" : a.issue, "Issue"); ic.className = "issue";
         lastIssue = a.issue;
-        cell(r, a.action);
-        cell(r, a.party || "—");
-        const sc = r.insertCell();
+        cell(r, a.action, "Required action");
+        cell(r, a.party || "—", "Party");
+        const sc = r.insertCell(); sc.dataset.label = "Status";
         const m = meta(a.status);
         const pill = el("span", "pill", m.label);
         pill.style.background = m.color; pill.style.color = m.text;
         sc.appendChild(pill);
-        const dc = cell(r, fmt(a.start) + " – " + fmt(a.finish));
+        const dc = cell(r, fmt(a.start) + " – " + fmt(a.finish), "Start – finish");
         if (a.overdue) dc.appendChild(el("div", "late", "Overdue"));
         if (a.dateIssue) dc.appendChild(el("div", "late", "Check dates"));
-        cell(r, a.note || "");
+        cell(r, a.note || "", "Notes");
       });
       wrap.appendChild(table);
       block.appendChild(wrap);
@@ -344,6 +346,8 @@
   document.getElementById("statusFilter").addEventListener("change", e => { filters.status = e.target.value; renderList(); });
   document.getElementById("partyFilter").addEventListener("change", e => { filters.party = e.target.value; renderList(); });
   document.getElementById("search").addEventListener("input", e => { filters.q = e.target.value.trim().toLowerCase(); renderList(); });
+
+  phone.addEventListener("change", () => { Chart.defaults.font.size = phone.matches ? 11 : 12; if (data) renderAll(); });
 
   refresh();
   setInterval(() => { if (!document.hidden) refresh(); }, CHECK_EVERY_MINUTES * 60 * 1000);
