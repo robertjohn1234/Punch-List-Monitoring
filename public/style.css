@@ -161,3 +161,36 @@ body { -webkit-text-size-adjust: 100%; }
   .item-block td:empty { display: none; }
   .item-block td::before { content: attr(data-label); display: block; font-size: 12px; color: var(--mut); }
 }
+
+/* ---------- Print / save as PDF (A4) ---------- */
+.heading-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+#printButton { font: inherit; font-weight: 600; padding: 8px 16px; border: 2px solid var(--steel); border-radius: 6px; background: var(--steel); color: #fff; cursor: pointer; }
+.print-only { display: none; }
+@media (pointer: coarse) { #printButton { min-height: 44px; font-size: 16px; } }
+@media (max-width: 640px) {
+  .heading-actions { flex-direction: column; }
+  #printButton { width: 100%; min-height: 44px; }
+}
+
+@page { size: A4; margin: 12mm; }
+@media print {
+  body { background: #fff; font-size: 10pt; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .topbar, .heading-actions, .tools, #status, .footer { display: none !important; }
+  .print-only { display: block; margin-bottom: 6mm; }
+  .print-head h1 { font-size: 24pt; }
+  .page-shell { max-width: none; padding: 0; }
+  .page-heading { margin-bottom: 4mm; }
+  .cards { grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 5mm; }
+  .card { padding: 6px 8px; break-inside: avoid; }
+  .card-value { font-size: 22pt; }
+  .grid { grid-template-columns: 1fr; }
+  .panel { border: 0; padding: 0; margin-bottom: 6mm; }
+  .panel:has(canvas) { break-inside: avoid; }
+  .table-wrap { overflow: visible; }
+  .item-block { margin-top: 5mm; }
+  .item-block h3 { break-after: avoid; }
+  .item-block table { min-width: 0; font-size: 8.5pt; }
+  .item-block thead { display: table-header-group; }
+  .item-block tr { break-inside: avoid; }
+  .item-block th, .item-block td { padding: 4px 5px; }
+}

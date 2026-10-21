@@ -19,12 +19,16 @@
   </header>
 
   <main class="page-shell">
+    <div class="print-only print-head"><h1>Punch List Report</h1><p id="printMeta"></p></div>
     <div class="page-heading">
       <div>
         <h1>Punch List Summary</h1>
         <p class="muted" id="subtitle">Loading...</p>
       </div>
-      <button id="refreshButton" type="button">Refresh data</button>
+      <div class="heading-actions">
+        <button id="printButton" type="button">Print / save as PDF</button>
+        <button id="refreshButton" type="button">Refresh data</button>
+      </div>
     </div>
 
     <section class="cards" id="summaryCards"></section>
@@ -348,6 +352,19 @@
   document.getElementById("search").addEventListener("input", e => { filters.q = e.target.value.trim().toLowerCase(); renderList(); });
 
   phone.addEventListener("change", () => { Chart.defaults.font.size = phone.matches ? 11 : 12; if (data) renderAll(); });
+
+  // Print / PDF: prints what is on screen (so the status, party and search filters apply)
+  const allCharts = () => [statusChart, partyChart, dueChart, trendChart].forEach(c => c && c.resize());
+  document.getElementById("printButton").addEventListener("click", () => window.print());
+  window.addEventListener("beforeprint", () => {
+    if (!data) return;
+    const parts = [filters.status === "all" ? "All statuses" : meta(filters.status).label,
+                   filters.party === "all" ? "All parties" : filters.party];
+    if (filters.q) parts.push('Search: "' + filters.q + '"');
+    document.getElementById("printMeta").textContent = "Printed " + new Date().toLocaleString() + " · " + parts.join(" · ");
+    allCharts();
+  });
+  window.addEventListener("afterprint", allCharts);
 
   refresh();
   setInterval(() => { if (!document.hidden) refresh(); }, CHECK_EVERY_MINUTES * 60 * 1000);
