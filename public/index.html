@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Punch List Monitoring</title>
+  <meta name="description" content="Punch list status, owners and due dates.">
+  <script src="/vendor/chart.umd.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand-name">Punch List Monitoring</div>
+      <div class="brand-subtitle">Status, owners and due dates</div>
+    </div>
+  </header>
+
+  <main class="page-shell">
+    <div class="page-heading">
+      <div>
+        <h1>Punch List Summary</h1>
+        <p class="muted" id="subtitle">Loading...</p>
+      </div>
+      <button id="refreshButton" type="button">Refresh data</button>
+    </div>
+
+    <section class="cards" id="summaryCards"></section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Actions by status</h2>
+        <div class="chart-box" style="height:300px"><canvas id="statusChart" role="img" aria-label="Doughnut chart of actions by status"></canvas></div>
+      </div>
+      <div class="panel">
+        <h2>Status by responsible party</h2>
+        <div class="chart-box" id="partyWrap"><canvas id="partyChart" role="img" aria-label="Stacked bar chart of status by responsible party"></canvas></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Open actions by finish week</h2>
+      <p class="muted" id="dueNote"></p>
+      <div class="chart-box" style="height:260px"><canvas id="dueChart" role="img" aria-label="Bar chart of open actions by finish week"></canvas></div>
+    </section>
+
+    <section class="panel">
+      <h2>All punch list actions</h2>
+      <div class="tools">
+        <select id="statusFilter" aria-label="Filter by status"></select>
+        <select id="partyFilter" aria-label="Filter by responsible party"></select>
+        <input id="search" type="search" placeholder="Search location, issue or action" aria-label="Search" size="30">
+      </div>
+      <div id="list"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Completion trend</h2>
+      <p class="muted" id="trendNote"></p>
+      <div class="chart-box" id="trendWrap" style="height:240px"><canvas id="trendChart" role="img" aria-label="Line chart of completed actions over time"></canvas></div>
+    </section>
+
+    <p id="status">Connecting...</p>
+    <footer class="footer">Internal use</footer>
+  </main>
+
+<script>
+  const CHECK_EVERY_MINUTES = 5;
+
+  const STATUS_META = {
+    "COMPLETED":       { label: "Completed",         color: "#16a34a", text: "#fff" },
+    "IN PROGRESS":     { label: "In progress",       color: "#2563eb", text: "#fff" },
+    "ON-HOLD":         { label: "On hold",           color: "#f5c400", text: "#14202b" },
+    "NOT STARTED":     { label: "Not started",       color: "#94a3b8", text: "#14202b" },
+    "TO BE SCHEDULED": { label: "To be scheduled",   color: "#cbd5e1", text: "#14202b" },
+    "FOR APPROVAL":    { label: "For approval",      color: "#7c3aed", text: "#fff" },
+    "FOR INSPECTION":  { label: "For inspection",    color: "#0d9488", text: "#fff" },
+    "FOR TESTING":     { label: "For testing",       color: "#0891b2", text: "#fff" },
+    "PENDING/DELAYED": { label: "Pending / delayed", color: "#dc2626", text: "#fff" },
+    "NO STATUS":       { label: "No status",         color: "#e2e8f0", text: "#14202b" }
+  };
+  const meta = s => STATUS_META[s] || { label: s, color: "#64748b", text: "#fff" };
+
+  let data = null, actions = [], history = null, lastPayload = "";
+  let statusChart, partyChart, dueChart, trendChart;
+  const filters = { status: "all", party: "all", q: "" };
+
+  const iso = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  const todayISO = () => iso(new Date());
+  const parse = s => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
+  const fmt = s => s ? parse(s).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "—";
+
+  function el(tag, cls, txt) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (txt !== undefined) n.textContent = txt;
+    return n;
+  }
+
+  function statusOrder() {
+    const present = [...new Set(actions.map(a => a.status))];
+    const known = Object.keys(STATUS_META).filter(s => present.includes(s));
+    return known.concat(present.filter(s => !known.includes(s)));
+  }
+
+  function prepare() {
+    const today = todayISO();
+    actions = data.items.flatMap(it => it.actions.map(a => Object.assign({}, a, {
+      no: it.no, location: it.location,
+      overdue: a.status !== "COMPLETED" && !a.dateIssue && !!a.finish && a.finish < today
+    })));
+  }
+
+  // ---------- cards ----------
+  function card(container, label, value, sub, cls) {
+    const c = el("div", "card");
+    c.appendChild(el("div", "card-label", label));
+    c.appendChild(el("div", "card-value" + (cls ? " " + cls : ""), value));
+    if (sub) c.appendChild(el("div", "card-sub", sub));
+    container.appendChild(c);
+  }
+
+  function renderCards() {
+    const box = document.getElementById("summaryCards");
+    box.replaceChildren();
+    const n = actions.length;
+    const count = (...s) => actions.filter(a => s.includes(a.status)).length;
+    const done = count("COMPLETED");
+    const itemsDone = data.items.filter(it => it.actions.every(a => a.status === "COMPLETED")).length;
+    const overdue = actions.filter(a => a.overdue).length;
+    const dateIssues = actions.filter(a => a.dateIssue).length;
+    const waiting = n - done - count("IN PROGRESS") - count("ON-HOLD");
+
+    card(box, "Punch list items", String(data.items.length), itemsDone + " fully completed");
+    card(box, "Actions completed", n ? Math.round(done / n * 100) + "%" : "—", done + " of " + n + " actions");
+    card(box, "In progress", String(count("IN PROGRESS")));
+    card(box, "On hold", String(count("ON-HOLD")), null, "v-hold");
+    card(box, "Not started or waiting", String(waiting), "Not started, to be scheduled, other");
+    card(box, "Overdue", String(overdue), "Open, finish date passed", overdue ? "v-late" : "");
+    if (dateIssues) card(box, "Check dates", String(dateIssues), "Finish date is before start date", "v-late");
+  }
+
+  // ---------- charts ----------
+  function renderStatusChart() {
+    const order = statusOrder();
+    if (statusChart) statusChart.destroy();
+    statusChart = new Chart(document.getElementById("statusChart"), {
+      type: "doughnut",
+      data: {
+        labels: order.map(s => meta(s).label),
+        datasets: [{ data: order.map(s => actions.filter(a => a.status === s).length), backgroundColor: order.map(s => meta(s).color) }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: "right" } } }
+    });
+  }
+
+  function renderPartyChart() {
+    const order = statusOrder();
+    const parties = [...new Set(actions.map(a => a.party || "(none)"))]
+      .sort((a, b) => actions.filter(x => (x.party || "(none)") === b).length - actions.filter(x => (x.party || "(none)") === a).length);
+    document.getElementById("partyWrap").style.height = Math.max(220, parties.length * 34 + 90) + "px";
+    if (partyChart) partyChart.destroy();
+    partyChart = new Chart(document.getElementById("partyChart"), {
+      type: "bar",
+      data: {
+        labels: parties,
+        datasets: order.map(s => ({
+          label: meta(s).label, backgroundColor: meta(s).color,
+          data: parties.map(p => actions.filter(a => (a.party || "(none)") === p && a.status === s).length)
+        }))
+      },
+      options: {
+        indexAxis: "y", responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: "bottom" } },
+        scales: { x: { stacked: true, beginAtZero: true, ticks: { precision: 0 } }, y: { stacked: true } }
+      }
+    });
+  }
+
+  function weekStart(s) {
+    const d = parse(s);
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+    return iso(d);
+  }
+
+  function renderDueChart() {
+    const open = actions.filter(a => a.status !== "COMPLETED");
+    const dated = open.filter(a => a.finish && !a.dateIssue);
+    const weeks = {};
+    dated.forEach(a => { const w = weekStart(a.finish); weeks[w] = (weeks[w] || 0) + 1; });
+    const keys = Object.keys(weeks).sort();
+    const today = todayISO();
+    const ended = w => { const d = parse(w); d.setDate(d.getDate() + 6); return iso(d) < today; };
+
+    const undated = open.length - dated.length;
+    document.getElementById("dueNote").textContent =
+      "Red weeks have already ended." + (undated ? " " + undated + " open actions have no usable finish date and are not shown." : "");
+
+    if (dueChart) dueChart.destroy();
+    dueChart = new Chart(document.getElementById("dueChart"), {
+      type: "bar",
+      data: {
+        labels: keys.map(w => fmt(w).replace(/, \d{4}$/, "")),
+        datasets: [{ label: "Open actions", data: keys.map(w => weeks[w]), backgroundColor: keys.map(w => ended(w) ? "#dc2626" : "#2563eb"), borderRadius: 3 }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { title: i => "Week of " + fmt(keys[i[0].dataIndex]) } } },
+        scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
+      }
+    });
+  }
+
+  function renderTrend() {
+    const days = history && Array.isArray(history.days) ? history.days.slice(-60) : [];
+    const note = document.getElementById("trendNote"), wrap = document.getElementById("trendWrap");
+    if (trendChart) { trendChart.destroy(); trendChart = null; }
+    if (days.length < 2) {
+      wrap.style.display = "none";
+      note.textContent = "The trend appears after at least 2 updates. Each update saves one line per day (saved so far: " + days.length + ").";
+      return;
+    }
+    wrap.style.display = "";
+    note.textContent = "Share of all actions marked completed, one point per update day.";
+    trendChart = new Chart(document.getElementById("trendChart"), {
+      type: "line",
+      data: {
+        labels: days.map(d => fmt(d.date).replace(/, \d{4}$/, "")),
+        datasets: [{ label: "Completed %", data: days.map(d => d.actions ? Math.round((d.byStatus["COMPLETED"] || 0) / d.actions * 1000) / 10 : null),
+          borderColor: "#16a34a", backgroundColor: "#16a34a", borderWidth: 3, tension: 0.2 }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+        scales: { y: { min: 0, max: 100, ticks: { callback: v => v + "%" } } } }
+    });
+  }
+
+  // ---------- filters + list ----------
+  function renderFilters() {
+    const sf = document.getElementById("statusFilter"), pf = document.getElementById("partyFilter");
+    sf.replaceChildren(); pf.replaceChildren();
+    sf.appendChild(new Option("All statuses", "all"));
+    statusOrder().forEach(s => sf.appendChild(new Option(meta(s).label + " (" + actions.filter(a => a.status === s).length + ")", s)));
+    pf.appendChild(new Option("All parties", "all"));
+    [...new Set(actions.map(a => a.party || "(none)"))].sort().forEach(p => pf.appendChild(new Option(p, p)));
+    sf.value = filters.status; pf.value = filters.party;
+    if (sf.value !== filters.status) filters.status = sf.value;
+    if (pf.value !== filters.party) filters.party = pf.value;
+  }
+
+  function matches(a) {
+    if (filters.status !== "all" && a.status !== filters.status) return false;
+    if (filters.party !== "all" && (a.party || "(none)") !== filters.party) return false;
+    if (filters.q) {
+      const hay = [a.location, a.issue, a.action, a.party, a.note, "pl " + a.no].join(" ").toLowerCase();
+      if (!hay.includes(filters.q)) return false;
+    }
+    return true;
+  }
+
+  function cell(row, txt) { const c = row.insertCell(); c.textContent = txt; return c; }
+
+  function renderList() {
+    const list = document.getElementById("list");
+    list.replaceChildren();
+    let shown = 0;
+
+    data.items.forEach(it => {
+      const rows = it.actions.map(a => actions.find(x => x.no === it.no && x.action === a.action && x.issue === a.issue && x.start === a.start && x.finish === a.finish && x.party === a.party)).filter(Boolean);
+      const visible = rows.filter(matches);
+      if (!visible.length) return;
+      shown += visible.length;
+
+      const block = el("div", "item-block");
+      block.appendChild(el("h3", "", "PL " + it.no + (it.location ? " · " + it.location : "")));
+      const done = it.actions.filter(a => a.status === "COMPLETED").length;
+      block.appendChild(el("div", "item-meta",
+        [it.designNo, it.wbsNo ? "WBS " + it.wbsNo : "", done + " of " + it.actions.length + " completed"].filter(Boolean).join(" · ")));
+
+      const wrap = el("div", "table-wrap");
+      const table = document.createElement("table");
+      const head = table.createTHead().insertRow();
+      ["Issue", "Required action", "Party", "Status", "Start – finish", "Notes"].forEach(h => head.appendChild(el("th", "", h)));
+      const body = table.createTBody();
+      let lastIssue = null;
+      visible.forEach(a => {
+        const r = body.insertRow();
+        const ic = cell(r, a.issue === lastIssue ? "" : a.issue); ic.className = "issue";
+        lastIssue = a.issue;
+        cell(r, a.action);
+        cell(r, a.party || "—");
+        const sc = r.insertCell();
+        const m = meta(a.status);
+        const pill = el("span", "pill", m.label);
+        pill.style.background = m.color; pill.style.color = m.text;
+        sc.appendChild(pill);
+        const dc = cell(r, fmt(a.start) + " – " + fmt(a.finish));
+        if (a.overdue) dc.appendChild(el("div", "late", "Overdue"));
+        if (a.dateIssue) dc.appendChild(el("div", "late", "Check dates"));
+        cell(r, a.note || "");
+      });
+      wrap.appendChild(table);
+      block.appendChild(wrap);
+      list.appendChild(block);
+    });
+
+    if (!shown) list.appendChild(el("p", "muted", "No actions match these filters."));
+  }
+
+  function renderAll() {
+    prepare();
+    document.getElementById("subtitle").textContent =
+      data.items.length + " punch list items · " + actions.length + " actions · checked against today's date, " + fmt(todayISO());
+    renderCards(); renderStatusChart(); renderPartyChart(); renderDueChart();
+    renderFilters(); renderList();
+  }
+
+  async function loadHistory() {
+    try {
+      const r = await fetch("/api/history", { cache: "no-store" });
+      history = r.ok ? await r.json() : null;
+    } catch (e) { history = null; }
+    renderTrend();
+  }
+
+  async function refresh(manual = false) {
+    const status = document.getElementById("status");
+    try {
+      const res = await fetch("/api/punchlist", { cache: "no-store" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Failed to load punch list data.");
+      const payload = JSON.stringify(json);
+      if (manual === true || payload !== lastPayload) {
+        lastPayload = payload; data = json;
+        renderAll();
+        await loadHistory();
+      }
+      status.textContent = "Connected | Last checked: " + new Date().toLocaleTimeString();
+    } catch (e) { status.textContent = "Error: " + e.message; }
+  }
+
+  document.getElementById("refreshButton").addEventListener("click", () => refresh(true));
+  document.getElementById("statusFilter").addEventListener("change", e => { filters.status = e.target.value; renderList(); });
+  document.getElementById("partyFilter").addEventListener("change", e => { filters.party = e.target.value; renderList(); });
+  document.getElementById("search").addEventListener("input", e => { filters.q = e.target.value.trim().toLowerCase(); renderList(); });
+
+  refresh();
+  setInterval(() => { if (!document.hidden) refresh(); }, CHECK_EVERY_MINUTES * 60 * 1000);
+</script>
+</body>
+</html>
